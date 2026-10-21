@@ -123,6 +123,9 @@ How well a game runs varies a lot; many games do not start yet.
 2. Install it with SideStore, AltStore or LiveContainer.
 3. Open BCD. Setup walks you through JIT, LocalDevVPN, Steam and the extra runtimes.
 
+For installation and updates in AltStore Classic or SideStore, add the
+[BCD source](https://thebcd69.github.io/bcd-games/source.json) under Sources.
+
 ## Reporting a problem
 
 1. When a game crashes, freezes or is closed by iOS, BCD's **auto-tune** suggests a fix. It is on
@@ -145,6 +148,9 @@ The build is the workflow [.github/workflows/build-ipa.yml](.github/workflows/bu
 and the scripts it runs under `build/` and `tools/`, step by step. Every release also carries
 `BCD-source.tar.xz`, the complete source of that release: this repository and all its
 submodules at the release's pins.
+
+For the AltStore source generator and GitHub Pages setup, see
+[source hosting and maintenance](tools/update-altsource.md).
 
 ## License
 
