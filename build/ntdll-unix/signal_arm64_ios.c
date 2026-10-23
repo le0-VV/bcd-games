@@ -5815,6 +5815,8 @@ skip_reclaim_band: ;
                      * This does NOT fix the missing commit -- it stops one page from
                      * eating an entire run, and dumps the region layout around it so the
                      * owner can be identified and the real fix aimed correctly. */
+                    /* Instruction traps carry opcodes; the guest-aware guard handles them. */
+                    if (req->exception == EXC_BAD_ACCESS)
                     {
                         static volatile uint64_t stuck_page;
                         static volatile uint64_t stuck_pc;
@@ -5872,7 +5874,7 @@ skip_reclaim_band: ;
                                 extern void abort_thread( int status );
                                 uint64_t cur_sp = __darwin_arm_thread_state64_get_sp(state);
                                 dprintf(STDERR_FILENO,
-                                    "[fault-stuck] BREAKING LOOP: page 0x%llx pc 0x%llx repeated %u times "
+                                    "[fault-stuck] BREAKING MEMORY LOOP: page 0x%llx pc 0x%llx repeated %u times "
                                     "-> diverting thread to abort_thread\n",
                                     (unsigned long long)fpage, (unsigned long long)fault_pc_check, n);
                                 state.__x[0] = 1;
