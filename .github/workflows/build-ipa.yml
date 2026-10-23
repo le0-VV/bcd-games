@@ -563,6 +563,12 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
+      # GLOBALROOT-wrapped DOS paths must reach the drive resolver (Dungeons II metadata).
+      - name: Check and patch GLOBALROOT DOS paths
+        run: |
+          python3 tests/host/check-globalroot.py
+          python3 tools/patch-wine-globalroot.py wine/dlls/ntdll/unix/file.c
+
       - name: Check and patch opt-in app-local DLL reads
         run: |
           python3 tests/host/check-app-local-dll.py
