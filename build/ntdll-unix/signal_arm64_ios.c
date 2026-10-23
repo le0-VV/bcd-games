@@ -1939,6 +1939,19 @@ static int ios_ajan2_read( uint64_t addr, void *buf, size_t len )
                                                      (mach_vm_address_t)buf, &got ) == KERN_SUCCESS && got == len;
 }
 
+/* FEX shares its SIGILL thunk across guest instructions. Read the saved RIP
+ * through the existing fault-safe reader; native faults keep their old key. */
+static uint64_t ios_fault_guest_rip( const arm_thread_state64_t *state, uint64_t pc )
+{
+    uint64_t frame = state->__x[28], rip = 0;
+    uint32_t insn = 0;
+
+    if (!ios_ajan2_pc_is_jit( pc ) || frame < 0x100000 || frame >= 0x800000000000ULL ||
+        !ios_ajan2_read( pc, &insn, sizeof(insn) ) || insn != 0xd4400000 ||
+        !ios_ajan2_read( frame + 0x18, &rip, sizeof(rip) )) return 0;
+    return rip;
+}
+
 /* kind 1: FEX's GuestSignal_SIGILL thunk (`hlt #0`); kind 2: GuestSignal_SIGSEGV (`mov w1,#0; ldr x1,[x1]`). */
 static void ios_ajan2_entry_fail( const arm_thread_state64_t *st, uintptr_t teb, int kind )
 {
@@ -8539,6 +8552,7 @@ static int ios_mach_deliver_guest_exception_inner( thread_t thread, arm_thread_s
     extern uint64_t ios_jit_reverse_translate( uint64_t addr, uint64_t *module_base );
 
     uint64_t pc = arm_thread_state64_get_pc( *state );
+    uint64_t redeliv_guest_rip = 0;
     uintptr_t rxb = (uintptr_t)ios_jit_rx_base_global;
     TEB *teb = NULL;
     void *dispatcher;
@@ -9153,6 +9167,9 @@ dispatch:
     PC_sig(&uc) = (ULONG_PTR)dispatcher;
     REGn_sig(18, &uc) = thread_teb;
 
+    /* Capture the fault identity before state becomes the dispatcher context. */
+    if (rec.ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION)
+        redeliv_guest_rip = ios_fault_guest_rip( state, pc );
     *state = mc.__ss;
 
     if (deliver_logs < 24 || (deliver_logs % 100) == 0)
@@ -9167,9 +9184,9 @@ dispatch:
      * guest restores the context and refaults, forever. ml452 stormed 65k×,
      * ml459 70k×, ml460 326,500× (rpmalloc free-list bucket holding x86 code
      * bytes; the wedged thread was the chrome-ipc pump and the run died of
-     * log/CPU burn instead of saying anything). No legitimate guest pattern
-     * redelivers the SAME (thread,pc,addr) thousands of times — handled
-     * retries (redirects, USD, unaligned) never reach this point. This sits
+     * log/CPU burn instead of saying anything). Count the same host fault and,
+     * for FEX's SIGILL thunk, the same guest RIP. Handled retries (redirects,
+     * USD, unaligned) never reach this point. This sits
      * at delivery-complete so every route counts, including the goto-dispatch
      * one that bypasses the rep[] debounce above. Single server thread: no
      * atomics needed. At the threshold: dump raw memory near the faulting
@@ -9197,22 +9214,26 @@ dispatch:
          * ~35 s and this guard killed a healthy game. A real storm refaults the
          * same instruction back to back on one thread, so the slot is chosen by
          * thread and any other fault on that thread restarts the run. */
-        static struct { uint64_t thread, key; uint32_t n; uint64_t t0, p0; } redeliv[16];   /* t0, p0: MADEIRA_FAULT_GUARD_RATE */
+        static struct { uint64_t thread, key, guest_rip; uint32_t n; uint64_t t0, p0; } redeliv[16];   /* t0, p0: MADEIRA_FAULT_GUARD_RATE */
         static volatile int ios_redeliv_terminating;
         uint64_t rkey = ((uint64_t)thread << 48) ^ pc ^ ((uint64_t)fault_addr << 1);
         int rslot = (int)(((uint64_t)thread * 0x9E3779B97F4A7C15ull) >> 60);
-        if (redeliv[rslot].thread != (uint64_t)thread || redeliv[rslot].key != rkey)
+        /* A different guest instruction at the shared thunk starts a new run. */
+        if (redeliv[rslot].thread != (uint64_t)thread || redeliv[rslot].key != rkey ||
+            redeliv[rslot].guest_rip != redeliv_guest_rip)
         {
             redeliv[rslot].thread = (uint64_t)thread;
             redeliv[rslot].key = rkey;
+            redeliv[rslot].guest_rip = redeliv_guest_rip;
             redeliv[rslot].n = 1;
             if (ios_fault_guard_rate_on()) ios_fgr_run_begin( &redeliv[rslot].t0, &redeliv[rslot].p0 );   /* madeira-bcd: MADEIRA_FAULT_GUARD_RATE */
         }
         else if (++redeliv[rslot].n == 256)
         {
             if (!ios_fault_guard_rate_on() || ios_fgr_say_256())
-                dprintf( 2, "[redeliv] 256 identical redeliveries pc=0x%llx addr=0x%llx — storm forming rev=ml461\n",
-                         (unsigned long long)pc, (unsigned long long)fault_addr );
+                dprintf( 2, "[redeliv] 256 identical redeliveries pc=0x%llx addr=0x%llx guest_rip=0x%llx — storm forming rev=ml461\n",
+                         (unsigned long long)pc, (unsigned long long)fault_addr,
+                         (unsigned long long)redeliv_guest_rip );
             ios_smc_loop_diag( thread, pc, fault_addr, rec.ExceptionCode );   /* madeira-bcd (build 591): one-shot [smc-loop], log only */
         }
         else if (redeliv[rslot].n >= 2000 && !ios_redeliv_terminating &&
@@ -9234,8 +9255,9 @@ dispatch:
             ios_redeliv_terminating = 1;
             static const int fregs[] = { 0, 8, 9, 10, 16, 19, 20 };
             unsigned fi;
-            dprintf( 2, "[redeliv] 2000 identical redeliveries pc=0x%llx addr=0x%llx — unrecoverable host fault misdelivered to guest rev=ml461\n",
-                     (unsigned long long)pc, (unsigned long long)fault_addr );
+            dprintf( 2, "[redeliv] 2000 identical redeliveries pc=0x%llx addr=0x%llx guest_rip=0x%llx — unrecoverable host fault misdelivered to guest rev=ml461\n",
+                     (unsigned long long)pc, (unsigned long long)fault_addr,
+                     (unsigned long long)redeliv_guest_rip );
             for (fi = 0; fi < sizeof(fregs) / sizeof(fregs[0]); fi++)
             {
                 uint64_t rv = state->__x[fregs[fi]];
