@@ -5731,8 +5731,11 @@ static int ios_vcrt_version( const char *s, unsigned int v[4] )
  * following component(s) are required to run this program: Microsoft Visual
  * C++ 2015-2022 Redistributable (arm64)" and exits 0x2329. The prefix has the
  * x64 and x86 markers only (prefix-template.tar.gz). Off unless the game's own
- * file says env.MADEIRA_VCRT_ARM64_KEY = 1 (the template's version, 14.42.34433.0)
- * or a version such as 14.44.35211. The keys are volatile, as wineboot's
+ * file enables env.MADEIRA_VCRT_ARM64_KEY. The app resolves 1 to the installed
+ * runtime's version before Wine starts, or 0 when no version can be read.
+ * An explicit version such as 14.44.35211 is passed through; a direct engine
+ * caller that still passes 1 gets the template's version, 14.42.34433.0.
+ * The keys are volatile, as wineboot's
  * hardware keys: nothing is saved with the prefix, a key already there is left
  * alone. Written once per session by the first process, before the program
  * starts.

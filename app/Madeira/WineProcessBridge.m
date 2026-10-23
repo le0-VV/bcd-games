@@ -2212,8 +2212,11 @@ static void *wine_process_thread(void *arg) {
              * Tsushima dies right after loading the MS x86_64 concrt140,
              * in the x64<->EC transition the two exemptions below describe. */
             const char *wineVcrt = getenv("MADEIRA_WINE_VCRT");
-            NSString *vcrtDir = use_arm64ec ? madeira_vcruntime_dir(bundlePath,   /* BCD: the bundle's DLLs, else the download */
-                NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject) : nil;
+            NSString *vcrtDir = madeira_vcruntime_dir(bundlePath,   /* BCD: the bundle's DLLs, else the download */
+                NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject);
+            /* Dock starts an ARM64 host whose x64 children need the marker too. */
+            extern void bcd_resolve_vcrt_arm64_key(const char *directory);   /* VCRuntimeDownload.swift */
+            bcd_resolve_vcrt_arm64_key(vcrtDir.fileSystemRepresentation);
             if (use_arm64ec && wineVcrt && wineVcrt[0] == '1') {
                 for (NSString *dll in [fm contentsOfDirectoryAtPath:vcrtDir error:nil]) {
                     NSString *dst = [sys32Dir stringByAppendingPathComponent:dll];

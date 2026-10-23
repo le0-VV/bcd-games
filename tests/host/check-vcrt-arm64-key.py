@@ -13,10 +13,13 @@ Needs Wine's headers: WINE_SRC points at a checkout (default ./wine).
 2. Wiring, read from the files: loader_ios.c calls it in start_main_thread right after the hardware
    keys and before init_files; the one getenv; every key made by the volatile helper; the switch reads
    as off unless set (the function returns before touching the registry).
-3. The function (server_ios.c between the vcrt-arm64-test marks, with ios_hidpad_key) compiled against a
+3. The raw engine function (server_ios.c between the vcrt-arm64-test marks, with ios_hidpad_key) compiled against a
    fake registry with Wine 11's parent rule: unset/empty/0 write nothing and log nothing; 1 writes the
    template's 14.42.34433.0 into both views, volatile; a version string writes that version; a bad
    value writes nothing and says so; a key already there is left alone; a repeated run adds nothing.
+
+The app resolves 1 to the installed DLL version before calling Wine. check-vcruntime-download.py
+tests that launch bridge; the raw 1 here checks the engine's legacy fallback for other callers.
 """
 from pathlib import Path
 import os, re, subprocess, sys, tarfile, tempfile

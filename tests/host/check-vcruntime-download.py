@@ -31,6 +31,9 @@ Checks:
      bundle's folder; one log line naming the source. The session uses it for the overlay
      and for MADEIRA_WINE_VCRT and keeps MADEIRA_MFC and both exemptions; the settings
      catalog's note for MADEIRA_WINE_VCRT is unchanged;
+     its call into Swift resolves MADEIRA_VCRT_ARM64_KEY=1 to that folder's DLL version,
+     including Dock sessions; missing or unreadable versions disable the marker, while
+     disabled settings and explicit versions are unchanged;
   5. the licence headers, the Xcode project, the bridging header and the workflow.
 The Swift part needs swiftc (--require-swift makes its absence a failure).
 """
@@ -631,6 +634,7 @@ else:
     note("%s is not here (the build's download): the real installer is not unpacked" % installer)
 
 # ---------------------------------------------------------------- 3. Swift
+fn = re.search(r"static NSString \*madeira_vcruntime_dir\(NSString \*bundle, NSString \*support\)\n\{\n.*?\n\}\n", bridge, re.S)
 STUBS = r'''
 import Foundation
 final class LogStore {
@@ -727,6 +731,14 @@ func describe(_ result: Result<String, Error>) -> String {
     @MainActor static func main() async {
         let a = Array(CommandLine.arguments.dropFirst())
         switch a.first ?? "" {
+        case "arm64-key":
+            let key = "MADEIRA_VCRT_ARM64_KEY"
+            unsetenv(key)
+            if a[3] != "(unset)" { setenv(key, a[3], 1) }
+            a[1].withCString { bundle in
+                a[2].withCString { support in bcd_test_resolve_vcrt_arm64_key(bundle, support) }
+            }
+            print(getenv(key).map { String(cString: $0) } ?? "(unset)")
         case "extract":
             do {
                 var steps: [Double] = []
@@ -814,9 +826,27 @@ else:
     (T / "main.swift").write_text(MAIN)
     obj = T / "BCDCab.o"
     b1 = subprocess.run([cc, "-c", "-O2", "-I", str(APP), str(APP / "BCDCab.c"), "-o", str(obj)], capture_output=True, text=True)
-    b2 = subprocess.run([swiftc, "-parse-as-library", "-swift-version", "5", "-Onone", "-import-objc-header", str(APP / "BCDCab.h"),
-                         str(APP / "VCRuntimeDownload.swift"), str(T / "winemono.swift"), str(T / "stubs.swift"), str(T / "main.swift"), str(obj), "-lz",
-                         "-o", str(T / "swiftdrv")], capture_output=True, text=True) if b1.returncode == 0 else b1
+    (T / "bridge.h").write_text('#include "' + str(APP / "BCDCab.h") + '"\n'
+                               'void bcd_test_resolve_vcrt_arm64_key(const char *bundle, const char *support);\n')
+    (T / "version-bridge.m").write_text(
+        "#import <Foundation/Foundation.h>\n#include <unistd.h>\n#include <stdio.h>\n"
+        "extern void bcd_resolve_vcrt_arm64_key(const char *directory);\n" + (fn.group(0) if fn else "") + r'''
+void bcd_test_resolve_vcrt_arm64_key(const char *bundle, const char *support)
+{
+    @autoreleasepool {
+        NSString *dir = madeira_vcruntime_dir([NSString stringWithUTF8String:bundle],
+                                             [NSString stringWithUTF8String:support]);
+        bcd_resolve_vcrt_arm64_key(dir.fileSystemRepresentation);
+    }
+}
+''')
+    vb = subprocess.run([cc, "-c", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
+                         str(T / "version-bridge.m"), "-o", str(T / "version-bridge.o")], capture_output=True, text=True)
+    check("the runtime selector's Objective-C to Swift bridge builds on the host", vb.returncode == 0, vb.stderr)
+    b2 = subprocess.run([swiftc, "-parse-as-library", "-swift-version", "5", "-Onone", "-import-objc-header", str(T / "bridge.h"),
+                         str(APP / "VCRuntimeDownload.swift"), str(T / "winemono.swift"), str(T / "stubs.swift"), str(T / "main.swift"),
+                         str(obj), str(T / "version-bridge.o"), "-lz", "-o", str(T / "swiftdrv")],
+                        capture_output=True, text=True) if b1.returncode == 0 and vb.returncode == 0 else (b1 if b1.returncode else vb)
     swift_ok = b2.returncode == 0
     check("VCRuntimeDownload.swift builds on the host with BCDCab.c (log and session state stubbed)", swift_ok, b2.stderr)
 
@@ -829,6 +859,60 @@ def swift(*argv, env=None):
 
 
 if swift_ok:
+    # A PE32+ DLL with one .rsrc section and a standard RT_VERSION resource.
+    def runtime_dll(version):
+        data = bytearray(0x400)
+        struct.pack_into("<H", data, 0, 0x5A4D)
+        struct.pack_into("<I", data, 0x3C, 0x80)
+        struct.pack_into("<IHH", data, 0x80, 0x4550, 0x8664, 1)
+        struct.pack_into("<HHH", data, 0x94, 0xF0, 0x2000, 0x20B)
+        struct.pack_into("<I", data, 0x104, 16)
+        struct.pack_into("<II", data, 0x118, 0x1000, 0x200)
+        struct.pack_into("<IIII", data, 0x190, 0x200, 0x1000, 0x200, 0x200)
+        for directory in (0x200, 0x218, 0x230):
+            struct.pack_into("<HH", data, directory + 12, 0, 1)
+        struct.pack_into("<II", data, 0x210, 16, 0x80000018)
+        struct.pack_into("<II", data, 0x228, 1, 0x80000030)
+        struct.pack_into("<II", data, 0x240, 1033, 0x48)
+        struct.pack_into("<II", data, 0x248, 0x1080, 92)
+        struct.pack_into("<HHH", data, 0x280, 92, 52, 0)
+        name = "VS_VERSION_INFO\0".encode("utf-16-le")
+        data[0x286:0x286 + len(name)] = name
+        struct.pack_into("<II", data, 0x2A8, 0xFEEF04BD, 0x10000)
+        major, minor, build, revision = version
+        struct.pack_into("<II", data, 0x2B0, major << 16 | minor, build << 16 | revision)
+        return data
+
+    marker_bundle = T / "arm64-marker/BCD.app"
+    marker_support = T / "arm64-marker/Application Support"
+    bundled_marker = marker_bundle / "x86_64-vcruntime/vcruntime140.dll"
+    downloaded_marker = marker_support / "VCRuntime/x86_64/vcruntime140.dll"
+    bundled_marker.parent.mkdir(parents=True)
+    downloaded_marker.parent.mkdir(parents=True)
+    bundled_marker.write_bytes(runtime_dll((14, 44, 35211, 0)))
+    downloaded_marker.write_bytes(runtime_dll((14, 50, 36001, 7)))
+
+    def marker(setting):
+        return swift("arm64-key", marker_bundle, marker_support, setting).strip()
+
+    check("ARM64 marker: the bundled runtime wins over a newer downloaded copy",
+          marker("1") == "14.44.35211.0")
+    bundled_marker.write_bytes(b"MZ")
+    check("ARM64 marker: an unreadable bundled version does not claim the download's version",
+          marker("1") == "0")
+    bundled_marker.unlink()
+    check("ARM64 marker: the downloaded runtime's version is passed through the C bridge",
+          marker("1") == "14.50.36001.7")
+    downloaded_marker.write_bytes(runtime_dll((14, 51, 36247, 0)))
+    check("ARM64 marker: a runtime update is detected at the next launch",
+          marker("1") == "14.51.36247.0")
+    downloaded_marker.write_bytes(b"MZ")
+    check("ARM64 marker: an unreadable PE version disables the marker", marker("1") == "0")
+    downloaded_marker.unlink()
+    check("ARM64 marker: no installed runtime disables the marker", marker("1") == "0")
+    for setting in ("(unset)", "", "0", "14.44.35211", "14.50.36001.7", "invalid"):
+        check("ARM64 marker: %r is left for Wine unchanged" % setting, marker(setting) == setting)
+
     out = swift("allowed", "https://aka.ms/vs/17/release/vc_redist.x64.exe",
                 "https://download.visualstudio.microsoft.com/download/pr/x/y/VC_redist.x64.exe",
                 "https://DOWNLOAD.visualstudio.microsoft.com:443/x", "http://download.visualstudio.microsoft.com/x",
@@ -984,7 +1068,6 @@ if swift_ok:
         note("no installer: the model's install, reinstall and remove are not run")
 
 # ---------------------------------------------------------------- 4. the bridge
-fn = re.search(r"static NSString \*madeira_vcruntime_dir\(NSString \*bundle, NSString \*support\)\n\{\n.*?\n\}\n", bridge, re.S)
 check("WineProcessBridge.m has madeira_vcruntime_dir", fn is not None)
 if fn:
     harness = T / "bridge.m"
@@ -1037,10 +1120,12 @@ int main(int argc, char **argv)
                   and (out[1:2] == ["as-before"]) == (want_dir == "bundle"), (out, err))
 
 blk = bridge[bridge.index('const char *wineVcrt = getenv("MADEIRA_WINE_VCRT");'):bridge.index('LOG("Symlinked %d MS VC++ Runtime DLLs')]
-check("the session takes the folder once, right after MADEIRA_WINE_VCRT, for x64 (ARM64EC) sessions only",
-      re.match(r'const char \*wineVcrt = getenv\("MADEIRA_WINE_VCRT"\);\n\s+NSString \*vcrtDir = use_arm64ec \? '
+check("the session selects the runtime and resolves the marker before the architecture-specific overlay (including Dock)",
+      re.match(r'const char \*wineVcrt = getenv\("MADEIRA_WINE_VCRT"\);\n\s+NSString \*vcrtDir = '
                r'madeira_vcruntime_dir\(bundlePath,[^\n]*\n\s+NSSearchPathForDirectoriesInDomains\(NSApplicationSupportDirectory, '
-               r'NSUserDomainMask, YES\)\.firstObject\) : nil;\n\s+if \(use_arm64ec && wineVcrt && wineVcrt\[0\] == \'1\'\) \{', blk) is not None)
+               r'NSUserDomainMask, YES\)\.firstObject\);', blk) is not None
+      and 'bcd_resolve_vcrt_arm64_key(vcrtDir.fileSystemRepresentation);' in blk
+      and blk.index('bcd_resolve_vcrt_arm64_key(vcrtDir.fileSystemRepresentation);') < blk.index("if (use_arm64ec"))
 check("MADEIRA_WINE_VCRT=1 keeps the builtins for that folder's names; the overlay links from it",
       "[fm contentsOfDirectoryAtPath:vcrtDir error:nil]" in blk and "NSString *vcrtSource = vcrtDir;" in blk
       and "NSArray *vcrtDlls = [fm contentsOfDirectoryAtPath:vcrtSource error:nil];" in blk
@@ -1083,8 +1168,9 @@ for name, text in (("BCDCab.c", cab_c), ("BCDCab.h", cab_h), ("VCRuntimeDownload
 me = Path(__file__).read_text().split("\n")
 check("this check carries the LICENSE-BCD.md header", me[1:4] == ["#" + h[2:] for h in HEADER])
 literals = re.findall(r'"((?:[^"\\\n]|\\.)*)"', re.sub(r"(?m)^\s*//.*$", "", swift_src))
-check("no user-visible string says Madeira", not [s for s in literals if "madeira" in s.lower()],
-      [s for s in literals if "madeira" in s.lower()])
+visible_madeira = [s for s in literals if "madeira" in s.lower() and s != "MADEIRA_VCRT_ARM64_KEY"]
+check("no user-visible string says Madeira (the internal environment key is not UI text)", not visible_madeira,
+      visible_madeira)
 check("nothing else is downloaded and nothing is run: one URL, no process, no dlopen",
       re.findall(r'URL\(string: "([^"]+)"\)', swift_src) == ["https://aka.ms/vs/17/release/vc_redist.x64.exe"]
       and not re.search(r"\bProcess\(|posix_spawn|dlopen|NSTask|\bsystem\(", swift_src + cab_c))

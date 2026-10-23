@@ -966,10 +966,12 @@ OVERLAY = {
     # madeira-bcd: ios_vcrt_arm64_key_publish (build/ntdll-unix/server_ios.c).
     "env.MADEIRA_VCRT_ARM64_KEY": {"category": "Wine core (ntdll)", "title": "ARM64 Visual C++ runtime marker (Unreal bootstrap)",
                 "kind": "text", "default": "",
-                "sources": ["build/ntdll-unix/server_ios.c"],
+                "sources": ["build/ntdll-unix/server_ios.c", "app/Madeira/VCRuntimeDownload.swift",
+                            "app/Madeira/WineProcessBridge.m"],
                 "note": "1: the session has the ARM64 Visual C++ 2015-2022 redistributable's \"Installed\" marker, "
                         "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\arm64 (also under Wow6432Node), "
-                        "with version 14.42.34433.0; a version such as 14.44.35211 writes that one. The keys are "
+                        "with the version read from the bundled Microsoft runtime, else the downloaded copy. "
+                        "If no version can be read, nothing is written. A version such as 14.44.35211 writes that one. The keys are "
                         "volatile (not saved with the prefix) and a key the prefix already has is left alone. For Unreal "
                         "Engine's bootstrap program (Denshattack_Proto.exe, FFRS.exe), an x64 program that sees an ARM64 "
                         "machine and stops with \"Microsoft Visual C++ 2015-2022 Redistributable (arm64)\" (exit "

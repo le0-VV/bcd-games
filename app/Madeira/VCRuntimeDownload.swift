@@ -444,6 +444,19 @@ enum VCRuntimeInstaller {
     }
 }
 
+/// Resolve the automatic ARM64 marker before Wine reads the launch environment.
+@_cdecl("bcd_resolve_vcrt_arm64_key")
+func bcdResolveVCRTArm64Key(_ directory: UnsafePointer<CChar>) {
+    let key = "MADEIRA_VCRT_ARM64_KEY"
+    guard let value = getenv(key), strcmp(value, "1") == 0 else { return }
+    let folder = URL(fileURLWithPath: String(cString: directory), isDirectory: true)
+    let version = VCRuntimeInstaller.installedVersion(in: folder) ?? ""
+    setenv(key, version.isEmpty ? "0" : version, 1)
+    let detail = version.isEmpty ? "no readable installed runtime version; marker disabled"
+                                : "using installed runtime version \(version)"
+    FileHandle.standardError.write(Data(("[vcrt-arm64] \(detail)\n").utf8))
+}
+
 // MARK: - Download
 
 /// One download of vc_redist.x64.exe: redirects only to VCRuntimeSource.hosts, progress,
