@@ -53,12 +53,25 @@ env.MADEIRA_VCRT_ARM64_KEY = 14.44.35211.0
 env.MADEIRA_OPTIN_DLLS = twinapi.appcore
 ```
 
-`MADEIRA_X64_IMAGE_NOCOPY`, `pool-split`, `quiet-log` and the remaining
-settings already exist. Copy omission is opt-in and is important for capacity:
-the previous runs exhausted the pool with redundant pure-x64 image copies.
-No copy-omission default is changed by this PR. MetalFX scaling is a display
-preference and is omitted here. The necessity of the orphan-lock setting,
-VC runtime marker and twinapi opt-in was not isolated individually.
+Keep this complete configuration when reproducing the successful launch.
+The source fixes alone do not enable these per-game options. In particular,
+retain copy omission, split-pool allocation, orphan-lock mode `0`, the ARM64
+VC runtime marker and the `twinapi.appcore` opt-in. The successful tests used
+all five. We did not test removing each setting after launch succeeded, so
+this is the supported test configuration rather than proof that each option
+is necessary on every device.
+
+Current upstream also supports `env.MADEIRA_VCRT_ARM64_KEY = 1`. It publishes
+at least `14.44.35211.0` and uses the session's VC++ runtime version when that
+is newer. An explicit version remains supported. The block above preserves
+the value used in the phone tests; the automatic value was checked against
+upstream source and the sanitised existing host test, without a new phone test.
+
+These options already exist, except for the recovery-log sampling gate.
+Copy omission avoids the redundant pure-x64 image copies that exhausted the
+pool in previous runs. Quiet logging avoids the observed ten-second debug
+output waits. Recovery-log sampling only reduces log volume; it is optional
+for launch. MetalFX scaling is a display preference and is omitted here.
 
 Test 5 enabled sampling unconditionally. The proposed setting enables the
 same sampling logic and is covered by host tests, including the disabled
@@ -86,6 +99,11 @@ python3 tests/host/check-rtcs-cap.py
 python3 tests/host/check-x64-image-nocopy.py
 python3 tests/host/check-config-catalog.py
 ```
+
+A configuration follow-up also ran `check-vcrt-arm64-key.py`. Its source
+checks and the fixture with ASan/UBSan passed. The unsanitised fixture
+aborted on the host with a stack-buffer-overflow report; that separate
+failure remains unresolved. No VCRT runtime code is changed here.
 
 Initialise the pinned source submodules before running the path and catalog
 checks. The native build applies the GLOBALROOT overlay; the path regression
