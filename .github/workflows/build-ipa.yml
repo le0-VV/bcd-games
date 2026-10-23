@@ -1848,6 +1848,7 @@ jobs:
           python3 tests/host/check-fault-guard-rate.py
           python3 tests/host/check-guest-fault-progress.py
           python3 tests/host/check-page-fault-guard.py
+          python3 tests/host/check-recovery-log.py
           python3 tests/host/check-pool-placement-retry.py
           python3 tests/host/check-user-va-gb.py
           python3 tests/host/check-create-view-conflict.py

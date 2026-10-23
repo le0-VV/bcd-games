@@ -1952,6 +1952,21 @@ static uint64_t ios_fault_guest_rip( const arm_thread_state64_t *state, uint64_t
     return rip;
 }
 
+extern int ios_recovery_log_sampling;  /* Set by __wine_main before guest threads start. */
+
+/* Shared HLT traps are routine recovery; unknown instruction faults keep full diagnostics. */
+static int ios_ill_diag_admit( const arm_thread_state64_t *state, uint64_t pc )
+{
+    static unsigned long long seen;
+    unsigned long long n;
+    if (!__atomic_load_n( &ios_recovery_log_sampling, __ATOMIC_RELAXED ) ||
+        !ios_fault_guest_rip( state, pc )) return 1;
+    n = __atomic_add_fetch( &seen, 1, __ATOMIC_RELAXED );
+    if (n == 9 || !(n % 1024))
+        dprintf( 2, "[ill-log] shared JIT instruction traps=%llu; keeping first 8 and every 1024th diagnostic bundle\n", n );
+    return n <= 8 || !(n % 1024);
+}
+
 /* kind 1: FEX's GuestSignal_SIGILL thunk (`hlt #0`); kind 2: GuestSignal_SIGSEGV (`mov w1,#0; ldr x1,[x1]`). */
 static void ios_ajan2_entry_fail( const arm_thread_state64_t *st, uintptr_t teb, int kind )
 {
@@ -11849,8 +11864,10 @@ static void ill_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 #ifdef WINE_IOS
     const int ill_dbg_ok = ios_make_wine_logging_safe();  /* ml375: before any ERR */
     ios_track_signal( signal, context );
-    if (ill_dbg_ok) ERR("ILL at pc=%p\n", (void*)PC_sig(context));
-    else dprintf( 2, "ILL at pc=%p (no TEB — wine logging unsafe)\n", (void*)PC_sig(context) );
+    const int ill_report = ios_ill_diag_admit( &context->uc_mcontext->__ss, PC_sig(context) );
+    if (ill_report && ill_dbg_ok) ERR("ILL at pc=%p\n", (void*)PC_sig(context));
+    else if (ill_report) dprintf( 2, "ILL at pc=%p (no TEB — wine logging unsafe)\n", (void*)PC_sig(context) );
+    if (ill_report)
     {
         /* iOS-Madeira diagnostic: when we ILL on a zero/empty page, dump full
          * register state + walk back FP chain to find who BR'd here. */
